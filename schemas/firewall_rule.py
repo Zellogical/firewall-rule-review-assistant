@@ -28,4 +28,4 @@ class FirewallRule:
     action: Literal["allow", "deny"]
 
 
-FirewallPolicy: list[FirewallRule]
+FirewallPolicy = list[FirewallRule]
