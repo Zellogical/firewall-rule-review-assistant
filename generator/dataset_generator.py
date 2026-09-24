@@ -26,13 +26,13 @@ import random
 from collections import Counter
 from dataclasses import dataclass
 from datetime import date
-from ipaddress import IPv4Address
+from ipaddress import IPv4Address, IPv4Network
 from pathlib import Path
 from typing import Literal
 
 from schemas.asset import Asset, AssetType, AssetZone, Criticality
 from schemas.communication import RequiredCommunication
-from schemas.firewall_rule import FirewallPolicy
+from schemas.firewall_rule import Address, FirewallPolicy, FirewallRule, Service, ServiceMatch
 from schemas.recommendation import ExpectedRecommendation
 from schemas.scenario import EvaluationScenario
 from schemas.usage import RuleUsageHistory
@@ -292,15 +292,324 @@ def generate_assets(rng: random.Random, site: int) -> list[Asset]:
     return assets
 
 
+def _to_tcp_service(port: int) -> Service:
+    """
+    Helper function to create a TCP service for the given port.
+    """
+
+    return Service(protocol="tcp", destination_port=port)
+
+
+def _to_network(site: int, zone: AssetZone) -> IPv4Network:
+    """
+    Helper function to create a network for the given site and zone.
+    """
+
+    return IPv4Network(f"10.{site}.{ZONE_OCTETS[zone]}.0/24")
+
+
+def _by_type(assets: list[Asset], asset_type: AssetType) -> list[Asset]:
+    """
+    Helper function to filter assets by type.
+    """
+
+    return [asset for asset in assets if asset.asset_type == asset_type]
+
+
 def generate_required_communications(assets: list[Asset]) -> list[RequiredCommunication]:
-    return []
+    communications: list[RequiredCommunication] = []
+
+    # Add required communications for staff workstations
+    for asset in _by_type(assets, "staff_workstation"):
+        communications.append(
+            RequiredCommunication(
+                f"REQ-{asset.asset_id.upper()}-EHR",
+                asset.asset_id,
+                "ehr_001",
+                _to_tcp_service(443),
+                "Staff workstation accesses the EHR web application.",
+                "Healthcare workflow; TCP/443 is a documented modeling choice."
+            )
+        )
+
+    # Add required communications for viewer workstations
+    for asset in _by_type(assets, "viewer_workstation"):
+        communications.append(
+            RequiredCommunication(
+                f"REQ-{asset.asset_id.upper()}-PACS",
+                asset.asset_id,
+                "pacs_001",
+                _to_tcp_service(443),
+                "Viewer workstation retrieves medical images from PACS.",
+                "NIST SP 1800-24 architecture; TCP/443 is a modeling choice."
+            )
+        )
+
+    # Add required communications for imaging modalities
+    for asset in _by_type(assets, "imaging_modality"):
+        communications.append(
+            RequiredCommunication(
+                f"REQ-{asset.asset_id.upper()}-PACS",
+                asset.asset_id,
+                "pacs_001",
+                _to_tcp_service(104),
+                "Imaging modality sends a study to PACS.",
+                "NIST SP 1800-24 architecture; the DICOM port is a modeling choice."
+            )
+        )
+
+    # Add required communications for infusion pumps
+    for asset in _by_type(assets, "infusion_pump"):
+        communications.append(
+            RequiredCommunication(
+                f"REQ-{asset.asset_id.upper()}-PUMP-SERVER",
+                asset.asset_id,
+                "pump_server_001",
+                _to_tcp_service(8443),
+                "Infusion pump exchanges configuration data with the pump server.",
+                "NIST SP 1800-8 architecture; TCP/8443 is a modeling choice."
+            )
+        )
+
+    # Add required communications for the remote access proxy and pump server
+    communications.extend(
+        [
+            RequiredCommunication(
+                "REQ-REMOTE-PUMP-SERVER",
+                "remote_proxy_001",
+                "pump_server_001",
+                _to_tcp_service(443),
+                "Remote proxy supports infrequent pump-server maintenance.",
+                "NIST SP 1800-8 remote-access concept; port and frequency are modeling choices."
+            ),
+            RequiredCommunication(
+                "REQ-PACS-VNA",
+                "pacs_001",
+                "vna_001",
+                _to_tcp_service(104),
+                "PACS transfers medical images to the vendor-neutral archive.",
+                "NIST SP 1800-24 imaging workflow; the DICOM port is a modeling choice."
+            ),
+            RequiredCommunication(
+                "REQ-RIS-PACS",
+                "ris_001",
+                "pacs_001",
+                _to_tcp_service(443),
+                "The radiology information system exchanges study information with PACS.",
+                "NIST SP 1800-24 imaging workflow; TCP/443 is a modeling choice."
+            )
+        ]
+    )
+
+    return communications
+
+
+def _by_id(assets: list[Asset], asset_id: str) -> Asset:
+    """
+    Helper function to find an asset by its ID.
+    """
+
+    return next(asset for asset in assets if asset.asset_id == asset_id)
+
+
+def _create_rule(
+    rule_id: str,
+    source_zones: list[str],
+    destination_zones: list[str],
+    source_addresses: list[Address],
+    destination_addresses: list[Address],
+    services: list[ServiceMatch],
+    action: Literal["allow", "deny"],
+) -> FirewallRule:
+    """
+    Helper function to create a firewall rule with the specified parameters.
+    """
+
+    return FirewallRule(
+        rule_id,
+        source_zones,
+        destination_zones,
+        source_addresses,
+        destination_addresses,
+        services,
+        action
+    )
 
 
 def generate_firewall_policy(
     profile: ProfileName,
-    assets: list[Asset]
+    assets: list[Asset],
+    site: int
 ) -> FirewallPolicy:
-    return FirewallPolicy([])
+    """
+    Generate a firewall policy based on the specified profile, assets, and site number.
+
+    Args:
+        profile (ProfileName): The name of the profile to generate.
+        assets (list[Asset]): A list of assets in the dataset.
+        site (int): The site number to use for generating IP addresses.
+
+    Returns:
+        FirewallPolicy: A list of firewall rules representing the policy for the dataset.
+    """
+
+    staff: list[Address] = [asset.ip_address for asset in _by_type(assets, "staff_workstation")]
+    viewers: list[Address] = [asset.ip_address for asset in _by_type(assets, "viewer_workstation")]
+    pumps: list[Address] = [asset.ip_address for asset in _by_type(assets, "infusion_pump")]
+    modalities: list[Address] = [asset.ip_address for asset in _by_type(assets, "imaging_modality")]
+
+    def address(asset_id: str) -> IPv4Address:
+        return _by_id(assets, asset_id).ip_address
+
+    broad = profile in {"overly_permissive", "protective_deny", "mixed"}
+    protective = profile in {"protective_deny", "mixed"}
+    policy: FirewallPolicy = []
+
+    # A protective policy will include a deny rule for staff workstations to PACS web access.
+    if protective:
+        policy.append(
+            _create_rule(
+                "deny_staff_pacs_web",
+                ["business_office_zone"],
+                ["clinical_services_zone"],
+                staff,
+                [address("pacs_001")],
+                [_to_tcp_service(443)],
+                "deny"
+            )
+        )
+
+    # A broad policy will include a rule that allows staff workstations to access any web service in the clinical services zone.
+    if broad:
+        policy.append(
+            _create_rule(
+                "allow_broad_clinical_web",
+                ["business_office_zone"],
+                ["clinical_services_zone"],
+                staff,
+                [_to_network(site, "clinical_services_zone")],
+                [_to_tcp_service(443)],
+                "allow"
+            )
+        )
+
+    # A clean policy will include a rule that allows staff workstations to access the EHR web application.
+    else:
+        policy.append(
+            _create_rule(
+                "allow_staff_ehr",
+                ["business_office_zone"],
+                ["clinical_services_zone"],
+                staff,
+                [address("ehr_001")],
+                [_to_tcp_service(443)],
+                "allow"
+            )
+        )
+
+    # These rules are common to all profiles and represent the required communications for viewers, modalities, pumps, and the remote proxy.
+    policy.extend(
+        [
+            _create_rule(
+                "allow_viewers_pacs",
+                ["business_office_zone"],
+                ["clinical_services_zone"],
+                viewers,
+                [address("pacs_001")],
+                [_to_tcp_service(443)],
+                "allow"
+            ),
+            _create_rule(
+                "allow_modalities_pacs",
+                ["medical_devices_zone"],
+                ["clinical_services_zone"],
+                modalities,
+                [address("pacs_001")],
+                [_to_tcp_service(104)],
+                "allow"
+            ),
+            _create_rule(
+                "allow_pumps_pump_server",
+                ["medical_devices_zone"],
+                ["biomedical_engineering_zone"],
+                pumps,
+                [address("pump_server_001")],
+                [_to_tcp_service(8443)],
+                "allow"
+            ),
+            _create_rule(
+                "allow_remote_pump_server",
+                ["remote_access_zone"],
+                ["biomedical_engineering_zone"],
+                [address("remote_proxy_001")],
+                [address("pump_server_001")],
+                [_to_tcp_service(443)],
+                "allow"
+            ),
+            _create_rule(
+                "allow_pacs_vna",
+                ["clinical_services_zone"],
+                ["clinical_services_zone"],
+                [address("pacs_001")],
+                [address("vna_001")],
+                [_to_tcp_service(104)],
+                "allow"
+            ),
+            _create_rule(
+                "allow_ris_pacs",
+                ["clinical_services_zone"],
+                ["clinical_services_zone"],
+                [address("ris_001")],
+                [address("pacs_001")],
+                [_to_tcp_service(443)],
+                "allow"
+            )
+        ]
+    )
+
+    # Add a rule with redundant usage for the "redundant" and "mixed" profiles.
+    if profile in {"redundant", "mixed"}:
+        policy.append(
+            _create_rule(
+                "redundant_staff_ehr",
+                ["business_office_zone"],
+                ["clinical_services_zone"],
+                [staff[0]],
+                [address("ehr_001")],
+                [_to_tcp_service(443)],
+                "allow"
+            )
+        )
+
+    # Add a rule with no current requirement for the "obsolete" and "mixed" profiles.
+    if profile in {"obsolete", "mixed"}:
+        policy.append(
+            _create_rule(
+                "obsolete_legacy_reporting",
+                ["business_office_zone"],
+                ["clinical_services_zone"],
+                staff,
+                [address("legacy_reporting_001")],
+                [_to_tcp_service(8443)],
+                "allow"
+            )
+        )
+
+    # Add a rule with incomplete usage history for the "incomplete_usage" and "mixed" profiles.
+    if profile in {"incomplete_usage", "mixed"}:
+        policy.append(
+            _create_rule(
+                "incomplete_ssh_management",
+                ["business_office_zone"],
+                ["biomedical_engineering_zone"],
+                [staff[0]],
+                [address("pump_server_001")],
+                [_to_tcp_service(22)],
+                "allow"
+            )
+        )
+
+    return policy
 
 
 def generate_rule_usage(
@@ -338,9 +647,12 @@ def generate_dataset(
     rng = random.Random(dataset_seed)
     site = rng.randint(20, 220)
     assets = generate_assets(rng, site)
+    required_communications = generate_required_communications(assets)
+    firewall_policy = generate_firewall_policy(profile.name, assets, site)
 
-    # TODO: Add logic to generate the firewall policy based on the profile and assets.
-    # TODO: Add logic to generate the required communications based on the profile and assets.
+    # TODO: Add logic to generate the rule usage history.
+
+    # TODO: Add logic to generate the evaluation scenarios and expected recommendations.
 
     dataset = GeneratedDataset(
         dataset_id=f"{profile.name}_{case_number:03d}",
@@ -350,9 +662,9 @@ def generate_dataset(
         end_date=end_date,
         history_days=history_days,
         assets=assets,
-        firewall_policy=FirewallPolicy([]),
+        firewall_policy=firewall_policy,
         rule_usage=RuleUsageHistory([]),
-        required_communications=list(),
+        required_communications=required_communications,
         evaluation_scenarios=list(),
         expected_recommendations=list()
     )
