@@ -694,6 +694,16 @@ def _write_csv(path: Path, fieldnames: list[str], rows: list[dict[str, object]])
         writer.writerows(rows)
 
 
+def _create_service_text(service: ServiceMatch) -> str:
+    """
+    Helper function to create a string representation of a service match for CSV output.
+    """
+
+    if service == "any":
+        return "any"
+    return f"{service.protocol}:{service.destination_port}"
+
+
 def write_dataset(dataset: GeneratedDataset, output_root: Path) -> Path:
     """
     Write one generated variation as CSV inputs, evaluation files, and metadata.
@@ -717,8 +727,60 @@ def write_dataset(dataset: GeneratedDataset, output_root: Path) -> Path:
         ]
     )
 
+    _write_csv(
+        inputs / "firewall_policy.csv",
+        [
+            "rule_id",
+            "source_zones",
+            "destination_zones",
+            "source_addresses",
+            "destination_addresses",
+            "services",
+            "action"
+        ],
+        [
+            {
+                "rule_id": rule.rule_id,
+                "source_zones": _join(list(rule.source_zones)),
+                "destination_zones": _join(list(rule.destination_zones)),
+                "source_addresses": _join(list(rule.source_addresses)),
+                "destination_addresses": _join(list(rule.destination_addresses)),
+                "services": _join([_create_service_text(service) for service in rule.services]),
+                "action": rule.action,
+            }
+            for rule in dataset.firewall_policy
+        ]
+    )
+
+    _write_csv(
+        inputs / "required_communications.csv",
+        [
+            "communication_id",
+            "source_asset_id",
+            "destination_asset_id",
+            "service_protocol",
+            "service_destination_port",
+            "purpose",
+            "source_reference"
+        ],
+        [
+            {
+                "communication_id": communication.communication_id,
+                "source_asset_id": communication.source_asset_id,
+                "destination_asset_id": communication.destination_asset_id,
+                "service_protocol": communication.service.protocol,
+                "service_destination_port": communication.service.destination_port,
+                "purpose": communication.purpose,
+                "source_reference": communication.source_reference
+            }
+            for communication in dataset.required_communications
+        ]
+    )
+
     counts = {
-        "asset_count": len(dataset.assets)
+        "asset_count": len(dataset.assets),
+        "rule_count": len(dataset.firewall_policy),
+        "required_communication_count": len(dataset.required_communications),
     }
 
     metadata: list[tuple[str, object]] = [
