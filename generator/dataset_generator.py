@@ -25,7 +25,7 @@ import hashlib
 import random
 from collections import Counter
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from ipaddress import IPv4Address, IPv4Network
 from pathlib import Path
 from typing import Literal
@@ -33,9 +33,9 @@ from typing import Literal
 from schemas.asset import Asset, AssetType, AssetZone, Criticality
 from schemas.communication import RequiredCommunication
 from schemas.firewall_rule import Address, FirewallPolicy, FirewallRule, Service, ServiceMatch
-from schemas.recommendation import ExpectedRecommendation
+from schemas.recommendation import ExpectedRecommendation, RecommendationLabel
 from schemas.scenario import EvaluationScenario
-from schemas.usage import RuleUsageHistory
+from schemas.usage import RuleUsage, RuleUsageHistory
 
 GENERATOR_VERSION = "1.0"
 
@@ -612,6 +612,40 @@ def generate_firewall_policy(
     return policy
 
 
+def _usage_kind(profile: ProfileName, rule_id: str) -> str:
+    """
+    Helper function to determine the usage kind for a given rule based on the profile and rule ID.
+
+    For example, a rule that is inactive but required will have a usage kind of "inactive".
+
+    A rule that is obsolete will have a usage kind of "obsolete".
+    """
+
+    if rule_id in {"redundant_staff_ehr", "deny_staff_pacs_web"}:
+        return "inactive"
+    if rule_id == "obsolete_legacy_reporting":
+        return "obsolete"
+    if rule_id == "incomplete_ssh_management":
+        return "incomplete"
+    if rule_id == "allow_remote_pump_server":
+        return "inactive" if profile in {"rare_required", "mixed"} else "periodic"
+    if rule_id in {"allow_modalities_pacs", "allow_pacs_vna", "allow_ris_pacs"}:
+        return "moderate"
+
+    return "routine"
+
+
+def _rng_for(seed: int, value: str) -> random.Random:
+    """
+    Helper function to create a deterministic random number generator for a given seed and value.
+
+    Specifically used to generate rule usage history for a specific rule in a dataset.
+    """
+
+    material = f"{seed}|{value}".encode("utf-8")
+    return random.Random(int.from_bytes(hashlib.sha256(material).digest()[:8], "big"))
+
+
 def generate_rule_usage(
     profile: ProfileName,
     policy: FirewallPolicy,
@@ -619,21 +653,207 @@ def generate_rule_usage(
     end_date: date,
     history_days: int
 ) -> RuleUsageHistory:
-    return RuleUsageHistory([])
+    """
+    Generate usage history for each rule in the policy.
+
+    Args:
+        profile (ProfileName): The name of the profile being generated.
+        policy (FirewallPolicy): The firewall policy for the dataset.
+        seed (int): The seed used to generate the dataset.
+        end_date (date): The end date used to generate the rule usage history.
+        history_days (int): The number of days of rule usage history to generate.
+
+    Returns:
+        RuleUsageHistory: A list of RuleUsage objects representing the usage history for each rule in the policy.
+    """
+
+    history: RuleUsageHistory = []
+    for firewall_rule in policy:
+        kind = _usage_kind(profile, firewall_rule.rule_id)
+        recorded_days = min(INCOMPLETE_HISTORY_DAYS, history_days) if kind == "incomplete" else history_days
+        rng = _rng_for(seed, firewall_rule.rule_id)
+
+        for days_ago in range(recorded_days - 1, -1, -1):
+            hits = 0
+            if kind == "routine":
+                hits = rng.randint(60, 160)
+            elif kind == "moderate":
+                hits = rng.randint(10, 60)
+            elif kind == "periodic" and days_ago in {30, 60, 90, 120, 150}:
+                hits = rng.randint(1, 5)
+            elif kind == "obsolete" and days_ago >= max(60, history_days // 2):
+                hits = rng.randint(5, 25)
+
+            history.append(RuleUsage(firewall_rule.rule_id, end_date - timedelta(days=days_ago), hits))
+
+    return history
 
 
 def generate_evaluation_scenarios(
     assets: list[Asset],
     required_communications: list[RequiredCommunication]
 ) -> list[EvaluationScenario]:
-    return []
+    """
+    Generate evaluation scenarios for each required communication and some additional attack scenarios.
+
+    Args:
+        assets (list[Asset]): A list of assets in the dataset.
+        required_communications (list[RequiredCommunication]): A list of required communications in the dataset.
+
+    Returns:
+        list[EvaluationScenario]: A list of EvaluationScenario objects representing the evaluation scenarios for the dataset.
+    """
+
+    scenarios = [
+        EvaluationScenario(
+            f"USE-{communication.communication_id}",
+            "use",
+            communication.source_asset_id,
+            communication.destination_asset_id,
+            communication.service,
+            "allow",
+            communication.purpose,
+        )
+        for communication in required_communications
+    ]
+
+    guest = _by_type(assets, "guest_device")[0].asset_id
+    staff = _by_type(assets, "staff_workstation")[0].asset_id
+    modality = _by_type(assets, "imaging_modality")[0].asset_id
+
+    scenarios.extend(
+        [
+            EvaluationScenario(
+                "ATK-GUEST-EHR",
+                "attack",
+                guest,
+                "ehr_001",
+                _to_tcp_service(443),
+                "deny",
+                "A guest device attempts to access the EHR."
+            ),
+            EvaluationScenario(
+                "ATK-GUEST-PACS",
+                "attack",
+                guest,
+                "pacs_001",
+                _to_tcp_service(443),
+                "deny",
+                "A guest device attempts to access PACS."
+            ),
+            EvaluationScenario(
+                "ATK-GUEST-PUMP",
+                "attack",
+                guest,
+                "pump_server_001",
+                _to_tcp_service(8443),
+                "deny",
+                "A guest device attempts to reach the pump server."
+            ),
+            EvaluationScenario(
+                "ATK-STAFF-PACS",
+                "attack",
+                staff,
+                "pacs_001",
+                _to_tcp_service(443),
+                "deny",
+                "A general staff workstation attempts direct PACS access."
+            ),
+            EvaluationScenario(
+                "ATK-STAFF-LEGACY-WEB",
+                "attack",
+                staff,
+                "legacy_reporting_001",
+                _to_tcp_service(443),
+                "deny",
+                "A staff workstation attempts undocumented web access to a legacy server."
+            ),
+            EvaluationScenario(
+                "ATK-STAFF-LEGACY-ALT",
+                "attack",
+                staff,
+                "legacy_reporting_001",
+                _to_tcp_service(8443),
+                "deny",
+                "A staff workstation attempts undocumented alternate-port access."
+            ),
+            EvaluationScenario(
+                "ATK-STAFF-PUMP-SSH",
+                "attack",
+                staff,
+                "pump_server_001",
+                _to_tcp_service(22),
+                "deny",
+                "A staff workstation attempts undocumented SSH access to the pump server."
+            ),
+            EvaluationScenario(
+                "ATK-MODALITY-EHR",
+                "attack",
+                modality,
+                "ehr_001",
+                _to_tcp_service(443),
+                "deny",
+                "An imaging modality attempts to access the EHR web application."
+            )
+        ]
+    )
+
+    return scenarios
 
 
 def generate_expected_recommendations(
     profile: ProfileName,
     firewall_policy: FirewallPolicy
 ) -> list[ExpectedRecommendation]:
-    return []
+    """
+    Generate expected recommendations for each firewall rule.
+
+    Args:
+        profile (ProfileName): The name of the profile being generated.
+        firewall_policy (FirewallPolicy): The firewall policy for the dataset.
+
+    Returns:
+        list[ExpectedRecommendation]: A list of ExpectedRecommendation objects representing the expected recommendations for each rule in the policy.
+    """
+
+    expected: list[ExpectedRecommendation] = []
+    special: dict[str, tuple[RecommendationLabel, str]] = {
+        "redundant_staff_ehr": (
+            "removal_candidate",
+            "An earlier rule already permits the same staff-to-EHR communication.",
+        ),
+        "obsolete_legacy_reporting": (
+            "removal_candidate",
+            "No required communication depends on the legacy rule and it has no recent usage.",
+        ),
+        "incomplete_ssh_management": (
+            "investigate",
+            "No requirement is documented, but only 21 days of usage data are available.",
+        ),
+        "allow_broad_clinical_web": (
+            "investigate",
+            "The rule supports required EHR access but also permits undocumented clinical access.",
+        ),
+        "deny_staff_pacs_web": (
+            "retain",
+            "Removal exposes staff-to-PACS access through the later broad allow rule.",
+        )
+    }
+
+    for firewall_rule in firewall_policy:
+        rule_id = firewall_rule.rule_id
+        if rule_id in special:
+            label, reason = special[rule_id]
+        elif rule_id == "allow_remote_pump_server" and profile in {"rare_required", "mixed"}:
+            label = "retain"
+            reason = "The inactive rule preserves documented, infrequent maintenance communication."
+        else:
+            label = "retain"
+            reason = "Removing the rule interrupts at least one documented required communication."
+
+        expected.append(ExpectedRecommendation(rule_id, label, reason))
+
+    return expected
 
 
 def generate_dataset(
@@ -646,13 +866,13 @@ def generate_dataset(
     dataset_seed = _derived_seed(base_seed, profile.name, case_number)
     rng = random.Random(dataset_seed)
     site = rng.randint(20, 220)
+
     assets = generate_assets(rng, site)
     required_communications = generate_required_communications(assets)
     firewall_policy = generate_firewall_policy(profile.name, assets, site)
-
-    # TODO: Add logic to generate the rule usage history.
-
-    # TODO: Add logic to generate the evaluation scenarios and expected recommendations.
+    rule_usage = generate_rule_usage(profile.name, firewall_policy, dataset_seed, end_date, history_days)
+    evaluation_scenarios = generate_evaluation_scenarios(assets, required_communications)
+    expected_recommendations = generate_expected_recommendations(profile.name, firewall_policy)
 
     dataset = GeneratedDataset(
         dataset_id=f"{profile.name}_{case_number:03d}",
@@ -663,15 +883,19 @@ def generate_dataset(
         history_days=history_days,
         assets=assets,
         firewall_policy=firewall_policy,
-        rule_usage=RuleUsageHistory([]),
+        rule_usage=rule_usage,
         required_communications=required_communications,
-        evaluation_scenarios=list(),
-        expected_recommendations=list()
+        evaluation_scenarios=evaluation_scenarios,
+        expected_recommendations=expected_recommendations
     )
 
     # TODO: Add validation of the generated dataset to ensure that it meets the expected conditions for the profile.
 
     return dataset
+
+
+def validate_dataset(dataset: GeneratedDataset) -> None:
+    pass
 
 
 def _join(values: list[object] | tuple[str, ...]) -> str:
@@ -711,6 +935,7 @@ def write_dataset(dataset: GeneratedDataset, output_root: Path) -> Path:
 
     root = output_root / dataset.dataset_id
     inputs = root / "inputs"
+    evaluation = root / "evaluation"
 
     _write_csv(
         inputs / "assets.csv",
@@ -777,10 +1002,66 @@ def write_dataset(dataset: GeneratedDataset, output_root: Path) -> Path:
         ]
     )
 
+    _write_csv(
+        inputs / "rule_usage.csv",
+        ["rule_id", "observed_on", "hit_count"],
+        [
+            {
+                "rule_id": record.rule_id,
+                "observed_on": record.observed_on.isoformat(),
+                "hit_count": record.hit_count,
+            }
+            for record in dataset.rule_usage
+        ]
+    )
+
+    _write_csv(
+        evaluation / "scenarios.csv",
+        [
+            "scenario_id",
+            "scenario_type",
+            "source_asset_id",
+            "destination_asset_id",
+            "service_protocol",
+            "service_destination_port",
+            "expected_action",
+            "description"
+        ],
+        [
+            {
+                "scenario_id": scenario.scenario_id,
+                "scenario_type": scenario.scenario_type,
+                "source_asset_id": scenario.source_asset_id,
+                "destination_asset_id": scenario.destination_asset_id,
+                "service_protocol": scenario.service.protocol,
+                "service_destination_port": scenario.service.destination_port,
+                "expected_action": scenario.expected_action,
+                "description": scenario.description,
+            }
+            for scenario in dataset.evaluation_scenarios
+        ]
+    )
+
+    _write_csv(
+        evaluation / "expected_recommendations.csv",
+        ["rule_id", "expected_recommendation", "justification"],
+        [
+            {
+                "rule_id": item.rule_id,
+                "expected_recommendation": item.expected_recommendation,
+                "justification": item.justification,
+            }
+            for item in dataset.expected_recommendations
+        ]
+    )
+
     counts = {
         "asset_count": len(dataset.assets),
         "rule_count": len(dataset.firewall_policy),
         "required_communication_count": len(dataset.required_communications),
+        "rule_usage_count": len(dataset.rule_usage),
+        "use_scenario_count": sum(s.scenario_type == "use" for s in dataset.evaluation_scenarios),
+        "attack_scenario_count": sum(s.scenario_type == "attack" for s in dataset.evaluation_scenarios)
     }
 
     metadata: list[tuple[str, object]] = [
@@ -803,6 +1084,7 @@ def write_dataset(dataset: GeneratedDataset, output_root: Path) -> Path:
         ),
         *counts.items()
     ]
+
     _write_csv(
         root / "manifest.csv",
         ["field", "value"],
@@ -910,7 +1192,7 @@ def main(argv: list[str] | None = None) -> None:
             "rules",
             "retain",
             "removal_candidate",
-            "investigate",
+            "investigate"
         ],
         index_rows
     )
