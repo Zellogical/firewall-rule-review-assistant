@@ -889,13 +889,61 @@ def generate_dataset(
         expected_recommendations=expected_recommendations
     )
 
-    # TODO: Add validation of the generated dataset to ensure that it meets the expected conditions for the profile.
+    validate_dataset(dataset)
 
     return dataset
 
 
 def validate_dataset(dataset: GeneratedDataset) -> None:
-    pass
+    """
+    Validate the generated dataset to ensure that it meets the expected conditions.
+    """
+
+    errors: list[str] = []
+    asset_ids = [asset.asset_id for asset in dataset.assets]
+    rule_ids = [rule.rule_id for rule in dataset.firewall_policy]
+    known_assets = set(asset_ids)
+
+    # Prevent asset duplicates
+    if len(asset_ids) != len(set(asset_ids)):
+        errors.append("Asset IDs must be unique.")
+
+    # Prevent IP address duplicates
+    if len({asset.ip_address for asset in dataset.assets}) != len(dataset.assets):
+        errors.append("Asset IP addresses must be unique.")
+
+    # Prevent rule duplicates
+    if len(rule_ids) != len(set(rule_ids)):
+        errors.append("Rule IDs must be unique.")
+
+    # Ensure that all required communications reference known assets
+    for communication in dataset.required_communications:
+        if communication.source_asset_id not in known_assets or communication.destination_asset_id not in known_assets:
+            errors.append(f"{communication.communication_id} references an unknown asset.")
+
+    # Ensure that all evaluation scenarios reference known assets
+    for scenario in dataset.evaluation_scenarios:
+        if scenario.source_asset_id not in known_assets or scenario.destination_asset_id not in known_assets:
+            errors.append(f"{scenario.scenario_id} references an unknown asset.")
+
+    # Ensure that all expected recommendations reference known rules
+    expected_ids = [item.rule_id for item in dataset.expected_recommendations]
+    if Counter(expected_ids) != Counter(rule_ids):
+        errors.append("Expected recommendations must cover every rule exactly once.")
+
+    # Ensure that the rule usage history has the expected number of rows for each rule
+    usage_by_rule = Counter(record.rule_id for record in dataset.rule_usage)
+    for rule_id in rule_ids:
+        expected_days = (
+            min(INCOMPLETE_HISTORY_DAYS, dataset.history_days)
+            if rule_id == "incomplete_ssh_management"
+            else dataset.history_days
+        )
+        if usage_by_rule[rule_id] != expected_days:
+            errors.append(f"{rule_id} has {usage_by_rule[rule_id]} usage rows; expected {expected_days}.")
+
+    if errors:
+        raise ValueError("Generated dataset failed validation:\n- " + "\n- ".join(errors))
 
 
 def _join(values: list[object] | tuple[str, ...]) -> str:
