@@ -425,9 +425,284 @@ def load_dataset(input_directory: str | Path) -> DatasetInputs:
     )
 
 
-class PolicyAnalyzer:
-    """Initial interface for working with one loaded policy dataset."""
+# Cross-file validation
+# Cross-file validation checks relationships that cannot be verified while loading a single CSV file.
+# For example, a required communication references two asset IDs that must exist in the assets dataset.
 
-    def __init__(self, dataset: DatasetInputs | str | Path):
+def _duplicate_values(values: list[str]) -> list[str]:
+    """
+    Helper to find duplicate values in a list and return them as a sorted list of strings.
+    """
+
+    seen = set()
+    duplicates = set()
+
+    for value in values:
+        if value in seen:
+            duplicates.add(value)
+        else:
+            seen.add(value)
+
+    return sorted(duplicates)
+
+
+def validate_inputs(inputs: DatasetInputs) -> None:
+    """
+    Validate relationships that cannot be checked while loading one CSV.
+
+    Args:
+        inputs: The DatasetInputs object containing all four datasets to validate.
+    """
+
+    errors: list[str] = []
+
+    # Check for duplicate IDs in each dataset
+    asset_ids = [asset.asset_id for asset in inputs.assets]
+    asset_addresses = [asset.ip_address for asset in inputs.assets]
+    rule_ids = [rule.rule_id for rule in inputs.firewall_policy]
+    communication_ids = [
+        communication.communication_id for communication in inputs.required_communications
+    ]
+
+    # Report any duplicates found in the datasets
+    for label, duplicates in (
+        ("asset IDs", _duplicate_values(asset_ids)),
+        ("asset IP addresses", _duplicate_values([str(addr) for addr in asset_addresses])),
+        ("rule IDs", _duplicate_values(rule_ids)),
+        ("communication IDs", _duplicate_values(communication_ids)),
+    ):
+        if duplicates:
+            errors.append(f"Duplicate {label}: {', '.join(duplicates)}")
+
+    known_assets = set(asset_ids)
+    known_rules = set(rule_ids)
+
+    # Validate that each asset has a non-empty asset_type and zone, and that required communications reference known assets.
+    for asset in inputs.assets:
+        if not asset.asset_type.strip():
+            errors.append(f"{asset.asset_id} must have a non-empty asset_type.")
+        if not asset.zone.strip():
+            errors.append(f"{asset.asset_id} must have a non-empty zone.")
+
+    # Validate that each required communication references known source and destination assets.
+    for communication in inputs.required_communications:
+        if communication.source_asset_id not in known_assets:
+            errors.append(
+                f"{communication.communication_id} has unknown source asset "
+                f"{communication.source_asset_id}."
+            )
+        if communication.destination_asset_id not in known_assets:
+            errors.append(
+                f"{communication.communication_id} has unknown destination asset "
+                f"{communication.destination_asset_id}."
+            )
+
+    # Validate rule usage history
+    for usage in inputs.rule_usage:
+        if usage.rule_id not in known_rules:
+            errors.append(f"Usage history references unknown rule {usage.rule_id}.")
+        if usage.hit_count < 0:
+            errors.append(f"Usage history for {usage.rule_id} has a negative hit count.")
+
+    # If any validation errors were found, raise an InputValidationError with a summary of all issues.
+    if errors:
+        raise InputValidationError(
+            "Input validation failed:\n- " + "\n- ".join(sorted(set(errors)))
+        )
+
+# Policy matching and evaluation
+# This is the core logic for evaluating a traffic flow against the firewall policy,
+# determining whether it is allowed or denied based on the rules defined in the policy.
+
+
+def _zone_matches(rule_zones: list[str], flow_zone: str) -> bool:
+    """
+    Helper to determine if a flow's zone matches any of the zones specified in a rule.
+
+    For example, if a rule specifies ["core_network_zone", "guest_network_zone"] and the flow's zone is
+    "core_network_zone", this function will return True.
+
+    If the flow's zone is "business_office_zone", it will return False. If the rule specifies ["any"], it will match any flow zone.
+    """
+
+    flow_zone_key = flow_zone.casefold()
+    return any(
+        zone.casefold() == "any" or zone.casefold() == flow_zone_key
+        for zone in rule_zones
+    )
+
+
+def _address_matches(
+    rule_addresses: list[Address],
+    flow_address: IPv4Address,
+) -> bool:
+    """
+    Helper to determine if a flow's IP address matches any of the addresses specified in a rule.
+
+    For example, if a rule specifies ["192.168.1.0/24"], this function will return True for any flow originating from that subnet.
+    """
+
+    for rule_address in rule_addresses:
+        if rule_address == "any":
+            return True
+        if isinstance(rule_address, IPv4Address) and rule_address == flow_address:
+            return True
+        if isinstance(rule_address, IPv4Network) and flow_address in rule_address:
+            return True
+    return False
+
+
+def _service_matches(
+    rule_services: list[ServiceMatch],
+    flow_service: Service,
+) -> bool:
+    """
+    Helper to determine if a flow's service matches any of the services specified in a rule.
+
+    For example, if a rule specifies ["tcp:443"], this function will return True for any flow using TCP port 443.
+    If the rule specifies ["any"], it will match any flow service.
+    """
+
+    for rule_service in rule_services:
+        if rule_service == "any":
+            return True
+        if (
+            rule_service.protocol == flow_service.protocol
+            and rule_service.destination_port == flow_service.destination_port
+        ):
+            return True
+    return False
+
+
+def _rule_matches(rule: FirewallRule, flow: TrafficFlow) -> bool:
+    """
+    Main helper to determine if a flow matches a firewall rule based on zones, addresses, and services.
+
+    All of the following must be true for a match:
+        - The flow's source zone matches one of the rule's source zones.
+        - The flow's destination zone matches one of the rule's destination zones.
+        - The flow's source address matches one of the rule's source addresses.
+        - The flow's destination address matches one of the rule's destination addresses.
+        - The flow's service matches one of the rule's services.
+    """
+
+    return (
+        _zone_matches(rule.source_zones, flow.source_zone)
+        and _zone_matches(rule.destination_zones, flow.destination_zone)
+        and _address_matches(rule.source_addresses, flow.source_address)
+        and _address_matches(rule.destination_addresses, flow.destination_address)
+        and _service_matches(rule.services, flow.service)
+    )
+
+
+def evaluate_policy(
+    policy: FirewallPolicy,
+    flow: TrafficFlow,
+    default_action: PolicyAction = "deny",
+    excluded_rule_id: str | None = None,
+) -> PolicyDecision:
+    """
+    Evaluate a traffic flow against the firewall policy, returning the action taken and the matched rule ID.
+
+    Args:
+        policy: The ordered list of firewall rules to evaluate against.
+        flow: The traffic flow to evaluate.
+        default_action: The action to take if no rules match the flow, either "allow" or "deny".
+        excluded_rule_id: An optional rule ID to ignore during evaluation, useful for testing rule changes.
+
+    Returns:
+        A PolicyDecision object indicating whether the flow is allowed or denied, and which rule (if any) matched.
+    """
+
+    if default_action not in {"allow", "deny"}:
+        raise ValueError("default_action must be 'allow' or 'deny'.")
+
+    # Look at each rule in order, skipping the excluded rule if specified, and return the first matching rule's action.
+    for rule in policy:
+        if rule.rule_id == excluded_rule_id:
+            continue
+        if _rule_matches(rule, flow):
+            return PolicyDecision(rule.action, rule.rule_id)
+
+    return PolicyDecision(default_action, None)
+
+
+def communication_flow(
+    communication: RequiredCommunication,
+    assets_by_id: dict[str, Asset],
+) -> TrafficFlow:
+    """
+    Takes a RequiredCommunication and a mapping of asset IDs to Asset objects, and returns a TrafficFlow object representing the communication.
+
+    Used to convert a RequiredCommunication into a TrafficFlow for policy evaluation,
+    ensuring that the source and destination assets exist in the provided mapping.
+
+    Args:
+        communication: The RequiredCommunication object to convert.
+        assets_by_id: A dictionary mapping asset IDs to Asset objects.
+
+    Returns:
+        A TrafficFlow object representing the communication between the source and destination assets.
+    """
+
+    # Validate that the source and destination asset IDs exist in the provided mapping.
+    try:
+        source = assets_by_id[communication.source_asset_id]
+        destination = assets_by_id[communication.destination_asset_id]
+    except KeyError as error:
+        raise InputValidationError(
+            f"Required communication {communication.communication_id} references "
+            f"unknown asset {error.args[0]}."
+        ) from error
+
+    return TrafficFlow(
+        source.asset_id,
+        destination.asset_id,
+        source.zone,
+        destination.zone,
+        source.ip_address,
+        destination.ip_address,
+        communication.service,
+    )
+
+
+class PolicyAnalyzer:
+    """
+    Evaluate traffic against one validated firewall-policy dataset.
+    """
+
+    def __init__(
+        self,
+        dataset: DatasetInputs | str | Path,
+        default_action: PolicyAction = "deny",
+    ) -> None:
         self.dataset = load_dataset(dataset) if isinstance(dataset, (str, Path)) else dataset
+        validate_inputs(self.dataset)
+        self.default_action: PolicyAction = default_action
         self.assets_by_id = {asset.asset_id: asset for asset in self.dataset.assets}
+
+    def flow_for_communication(
+        self,
+        communication: RequiredCommunication,
+    ) -> TrafficFlow:
+        """
+        Convert a RequiredCommunication into a TrafficFlow for policy evaluation.
+        """
+
+        return communication_flow(communication, self.assets_by_id)
+
+    def evaluate(
+        self,
+        flow: TrafficFlow,
+        excluded_rule_id: str | None = None,
+    ) -> PolicyDecision:
+        """
+        Main entry point for evaluating a traffic flow against the firewall policy, optionally excluding a specific rule.
+        """
+
+        return evaluate_policy(
+            self.dataset.firewall_policy,
+            flow,
+            self.default_action,
+            excluded_rule_id,
+        )
