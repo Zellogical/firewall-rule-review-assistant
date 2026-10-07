@@ -50,7 +50,7 @@ Criticality = Literal["low", "medium", "high", "critical"]
 @dataclass(frozen=True)
 class Asset:
     asset_id: str
-    asset_type: AssetType
+    asset_type: str
     ip_address: IPv4Address
-    zone: AssetZone
+    zone: str
     criticality: Criticality

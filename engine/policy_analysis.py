@@ -1,9 +1,29 @@
 """
-Load the datasets used by the firewall policy analysis engine.
+Load and analyze a simplified ordered firewall policy.
 
-The generator creates healthcare-focused examples, but the analyzer only
-expects the supplied CSV files to follow the project's schema. Asset types and
-zone names are therefore treated as dataset-defined labels.
+The analyzer is driven by the structure of the supplied datasets, not by the
+healthcare-specific values used by this project's synthetic data generator.
+For example, asset_type and zone may contain any non-empty labels, not just
+the healthcare-specific values used in the synthetic datasets.
+
+The analysis uses only these four inputs:
+
+* ``assets.csv`` - assets, IP addresses, zones, and criticality
+* ``firewall_policy.csv`` - ordered allow/deny rules
+* ``rule_usage.csv`` - rule hit history
+* ``required_communications.csv`` - communications that must be preserved
+
+At a high level the engine does the following:
+
+1. Load the CSV files and validate their required columns and relationships.
+2. Match traffic against zone, address, protocol, and destination-port fields.
+3. Evaluate rules from top to bottom; the first match wins.
+4. Re-evaluate the policy with one rule temporarily removed.
+5. Report what changed: required traffic blocked, traffic newly allowed,
+   undocumented traffic removed, and which rule/default action takes over.
+
+Evaluation scenarios and expected recommendations are deliberately not read by
+this module so they can be an answer key for later evaluation.
 """
 
 from __future__ import annotations
@@ -15,7 +35,7 @@ from ipaddress import IPv4Address, IPv4Network, ip_address, ip_network
 from pathlib import Path
 from typing import Literal, cast
 
-from schemas.asset import Asset, AssetType, AssetZone, Criticality
+from schemas.asset import Asset, Criticality
 from schemas.communication import RequiredCommunication
 from schemas.firewall_rule import Address, FirewallPolicy, FirewallRule, Service, ServiceMatch
 from schemas.usage import RuleUsage, RuleUsageHistory
@@ -73,6 +93,19 @@ class TrafficFlow:
     destination_address: IPv4Address
     service: Service
 
+    @property
+    def key(self) -> tuple[str, str, str, int]:
+        """
+        Return a stable key for comparing the flow with documented requirements.
+        """
+
+        return (
+            self.source_asset_id,
+            self.destination_asset_id,
+            self.service.protocol,
+            self.service.destination_port,
+        )
+
 
 @dataclass(frozen=True)
 class PolicyDecision:
@@ -90,12 +123,71 @@ class PolicyDecision:
     action: PolicyAction
     matched_rule_id: str | None
 
+    @property
+    def used_default(self) -> bool:
+        return self.matched_rule_id is None
+
+
+@dataclass(frozen=True)
+class FlowChange:
+    """
+    A flow whose allow/deny behavior changed after a rule was removed.
+    """
+
+    flow: TrafficFlow
+    before: PolicyDecision
+    after: PolicyDecision
+    destination_criticality: Criticality
+
+
+@dataclass(frozen=True)
+class RuleRemovalAnalysis:
+    """
+    Counterfactual result for removing exactly one firewall rule.
+
+    ``observed_replacement_rule_ids`` contains rules (or ``<default>``) that still
+    produce the target rule's action for modeled flows matching the target
+    after it is removed. This intentionally also captures a fully shadowed
+    rule: an earlier rule may already be handling all of the target's traffic.
+    """
+
+    rule_id: str
+    rule_action: PolicyAction
+    blocked_required_communication_ids: tuple[str, ...]
+    newly_allowed_flows: tuple[FlowChange, ...]
+    newly_allowed_critical_flows: tuple[FlowChange, ...]
+    removed_undocumented_flows: tuple[FlowChange, ...]
+    removed_undocumented_critical_flows: tuple[FlowChange, ...]
+    changed_flows: tuple[FlowChange, ...]
+    observed_replacement_rule_ids: tuple[str, ...]
+
+    @property
+    def has_modeled_effect(self) -> bool:
+        """
+        Whether removing the rule changes allow/deny behavior for a modeled flow.
+        """
+
+        return bool(self.changed_flows)
+
+    @property
+    def is_behaviorally_redundant(self) -> bool:
+        """
+        Whether modeled target traffic keeps the same action without the rule.
+        """
+
+        return not self.changed_flows and bool(self.observed_replacement_rule_ids)
+
+
+# ---------------------------------------------------------------------------
+# CSV loading
+# ---------------------------------------------------------------------------
+
 
 def _read_csv(path: Path, required_columns: set[str]) -> list[dict[str, str]]:
     """
     Helpers for reading CSV files and validating their structure.
 
-        Args:
+    Args:
         list[str]: path: The path to the CSV file to read.
         list[str]: required_columns: A set of column names that must be present in the CSV
     """
@@ -244,6 +336,8 @@ def load_assets_csv(path: Path) -> list[Asset]:
 
     for row_number, row in enumerate(rows, start=2):
         context = f"{path.name} row {row_number}"
+        asset_type = _required_text(row, "asset_type", path.name, row_number)
+        zone = _required_text(row, "zone", path.name, row_number)
         criticality = _required_text(row, "criticality", path.name, row_number).lower()
         if criticality not in CRITICALITIES:
             raise InputValidationError(f"{context}: unsupported criticality '{criticality}'.")
@@ -255,15 +349,9 @@ def load_assets_csv(path: Path) -> list[Asset]:
         assets.append(
             Asset(
                 _required_text(row, "asset_id", path.name, row_number),
-                cast(
-                    AssetType,
-                    _required_text(row, "asset_type", path.name, row_number),
-                ),
+                asset_type,
                 address,
-                cast(
-                    AssetZone,
-                    _required_text(row, "zone", path.name, row_number),
-                ),
+                zone,
                 cast(Criticality, criticality)
             )
         )
@@ -285,7 +373,6 @@ def load_firewall_policy_csv(path: Path) -> FirewallPolicy:
         "services",
         "action"
     }
-
     rows = _read_csv(path, columns)
     policy: FirewallPolicy = []
 
@@ -415,19 +502,22 @@ def load_dataset(input_directory: str | Path) -> DatasetInputs:
     if (directory / "inputs").is_dir() and not (directory / "assets.csv").is_file():
         directory = directory / "inputs"
 
-    return DatasetInputs(
+    inputs = DatasetInputs(
         assets=load_assets_csv(directory / "assets.csv"),
         firewall_policy=load_firewall_policy_csv(directory / "firewall_policy.csv"),
         rule_usage=load_rule_usage_csv(directory / "rule_usage.csv"),
         required_communications=load_required_communications_csv(
             directory / "required_communications.csv"
-        )
+        ),
     )
+    validate_inputs(inputs)
+    return inputs
 
 
+# ---------------------------------------------------------------------------
 # Cross-file validation
-# Cross-file validation checks relationships that cannot be verified while loading a single CSV file.
-# For example, a required communication references two asset IDs that must exist in the assets dataset.
+# ---------------------------------------------------------------------------
+
 
 def _duplicate_values(values: list[str]) -> list[str]:
     """
@@ -444,6 +534,19 @@ def _duplicate_values(values: list[str]) -> list[str]:
             seen.add(value)
 
     return sorted(duplicates)
+
+
+def _valid_service(service: object) -> bool:
+    """
+    Helper to validate that a service object is a Service instance with a supported protocol and a valid destination port.
+    """
+
+    return (
+        isinstance(service, Service)
+        and service.protocol in SUPPORTED_PROTOCOLS
+        and isinstance(service.destination_port, int)
+        and 1 <= service.destination_port <= 65535
+    )
 
 
 def validate_inputs(inputs: DatasetInputs) -> None:
@@ -479,10 +582,16 @@ def validate_inputs(inputs: DatasetInputs) -> None:
 
     # Validate that each asset has a non-empty asset_type and zone, and that required communications reference known assets.
     for asset in inputs.assets:
-        if not asset.asset_type.strip():
+        # Asset type and zone are dataset-defined labels.  They only need to
+        # exist; the policy engine does not require a predefined vocabulary.
+        if not isinstance(asset.asset_type, str) or not asset.asset_type.strip():
             errors.append(f"{asset.asset_id} must have a non-empty asset_type.")
-        if not asset.zone.strip():
+        if not isinstance(asset.zone, str) or not asset.zone.strip():
             errors.append(f"{asset.asset_id} must have a non-empty zone.")
+        if asset.criticality not in CRITICALITIES:
+            errors.append(f"{asset.asset_id} has unsupported criticality {asset.criticality}.")
+        if not isinstance(asset.ip_address, IPv4Address):
+            errors.append(f"{asset.asset_id} must use one IPv4 address.")
 
     # Validate that each required communication references known source and destination assets.
     for communication in inputs.required_communications:
@@ -496,6 +605,8 @@ def validate_inputs(inputs: DatasetInputs) -> None:
                 f"{communication.communication_id} has unknown destination asset "
                 f"{communication.destination_asset_id}."
             )
+        if not _valid_service(communication.service):
+            errors.append(f"{communication.communication_id} has an invalid service.")
 
     # Validate rule usage history
     for usage in inputs.rule_usage:
@@ -504,15 +615,65 @@ def validate_inputs(inputs: DatasetInputs) -> None:
         if usage.hit_count < 0:
             errors.append(f"Usage history for {usage.rule_id} has a negative hit count.")
 
+    # Validate each firewall rule's action, zones, addresses, and services.
+    for rule in inputs.firewall_policy:
+        if rule.action not in {"allow", "deny"}:
+            errors.append(f"{rule.rule_id} has unsupported action {rule.action}.")
+
+        for field_name, zones in (
+            ("source_zones", rule.source_zones),
+            ("destination_zones", rule.destination_zones),
+        ):
+            if not zones:
+                errors.append(f"{rule.rule_id} has an empty {field_name} list.")
+                continue
+
+            any_count = sum(
+                1
+                for zone in zones
+                if isinstance(zone, str) and zone.casefold() == "any"
+            )
+            if any_count and len(zones) > 1:
+                errors.append(f"{rule.rule_id} mixes 'any' with specific {field_name}.")
+
+            for zone in zones:
+                if not isinstance(zone, str) or not zone.strip():
+                    errors.append(
+                        f"{rule.rule_id} has an empty or invalid {field_name} value."
+                    )
+
+        for field_name, addresses in (
+            ("source_addresses", rule.source_addresses),
+            ("destination_addresses", rule.destination_addresses),
+        ):
+            if not addresses:
+                errors.append(f"{rule.rule_id} has an empty {field_name} list.")
+                continue
+            if "any" in addresses and len(addresses) > 1:
+                errors.append(f"{rule.rule_id} mixes 'any' with specific {field_name}.")
+            for address in addresses:
+                if address != "any" and not isinstance(address, (IPv4Address, IPv4Network)):
+                    errors.append(f"{rule.rule_id} has an invalid {field_name} value {address}.")
+
+        if not rule.services:
+            errors.append(f"{rule.rule_id} has an empty services list.")
+        elif "any" in rule.services and len(rule.services) > 1:
+            errors.append(f"{rule.rule_id} mixes 'any' with specific services.")
+        else:
+            for service in rule.services:
+                if service != "any" and not _valid_service(service):
+                    errors.append(f"{rule.rule_id} has an invalid service {service}.")
+
     # If any validation errors were found, raise an InputValidationError with a summary of all issues.
     if errors:
         raise InputValidationError(
             "Input validation failed:\n- " + "\n- ".join(sorted(set(errors)))
         )
 
-# Policy matching and evaluation
-# This is the core logic for evaluating a traffic flow against the firewall policy,
-# determining whether it is allowed or denied based on the rules defined in the policy.
+
+# ---------------------------------------------------------------------------
+# Matching and ordered policy evaluation
+# ---------------------------------------------------------------------------
 
 
 def _zone_matches(rule_zones: list[str], flow_zone: str) -> bool:
@@ -666,9 +827,217 @@ def communication_flow(
     )
 
 
+# ---------------------------------------------------------------------------
+# Counterfactual rule-removal analysis
+# ---------------------------------------------------------------------------
+
+
+def candidate_services(
+    policy: FirewallPolicy,
+    required_communications: list[RequiredCommunication],
+) -> tuple[Service, ...]:
+    """
+    Return the specific services that will be used to test traffic flows.
+
+    Services are collected from the firewall policy and required communications.
+    Rules using "any" are not added because "any" is not a specific service.
+    """
+
+    services = {communication.service for communication in required_communications}
+    for rule in policy:
+        for service in rule.services:
+            if service != "any":
+                services.add(service)
+
+    return tuple(sorted(services, key=lambda item: (item.protocol, item.destination_port)))
+
+
+def candidate_flows(
+    assets: list[Asset],
+    services: tuple[Service, ...],
+) -> tuple[TrafficFlow, ...]:
+    """
+    Enumerate known asset pairs across the concrete modeled services.
+    """
+
+    flows: list[TrafficFlow] = []
+    for source in assets:
+        for destination in assets:
+            if source.asset_id == destination.asset_id:
+                continue
+            for service in services:
+                flows.append(
+                    TrafficFlow(
+                        source.asset_id,
+                        destination.asset_id,
+                        source.zone,
+                        destination.zone,
+                        source.ip_address,
+                        destination.ip_address,
+                        service,
+                    )
+                )
+    return tuple(flows)
+
+
+def _required_flow_keys(
+    communications: list[RequiredCommunication],
+    assets_by_id: dict[str, Asset],
+) -> set[tuple[str, str, str, int]]:
+    return {
+        communication_flow(communication, assets_by_id).key
+        for communication in communications
+    }
+
+
+def _blocked_required_communications(
+    inputs: DatasetInputs,
+    assets_by_id: dict[str, Asset],
+    rule_id: str,
+    default_action: PolicyAction,
+) -> set[str]:
+    """
+    Return every required communication newly blocked by the removal.
+
+    Communications are evaluated individually instead of through a dictionary
+    keyed by flow so duplicate requirements with the same flow are preserved.
+    """
+
+    blocked: set[str] = set()
+    for communication in inputs.required_communications:
+        flow = communication_flow(communication, assets_by_id)
+        before = evaluate_policy(inputs.firewall_policy, flow, default_action)
+        after = evaluate_policy(
+            inputs.firewall_policy,
+            flow,
+            default_action,
+            excluded_rule_id=rule_id,
+        )
+        if before.action == "allow" and after.action == "deny":
+            blocked.add(communication.communication_id)
+    return blocked
+
+
+def analyze_rule_removal(
+    inputs: DatasetInputs,
+    rule_id: str,
+    default_action: PolicyAction = "deny",
+) -> RuleRemovalAnalysis:
+    """
+    Analyze the effect of removing one rule.
+
+    The function builds concrete flows from the supplied asset inventory and
+    concrete services found in the policy/required communications.  Each flow
+    is evaluated twice: once with the full ordered policy and once with the
+    target rule skipped.  Only differences between those two decisions are
+    reported as removal effects.
+    """
+
+    validate_inputs(inputs)
+
+    matches = [rule for rule in inputs.firewall_policy if rule.rule_id == rule_id]
+    if len(matches) != 1:
+        raise ValueError(f"Expected exactly one rule named {rule_id}; found {len(matches)}.")
+
+    target_rule = matches[0]
+    assets_by_id = {asset.asset_id: asset for asset in inputs.assets}
+    required_keys = _required_flow_keys(inputs.required_communications, assets_by_id)
+    blocked_required = _blocked_required_communications(
+        inputs,
+        assets_by_id,
+        rule_id,
+        default_action,
+    )
+
+    changed: list[FlowChange] = []
+    newly_allowed: list[FlowChange] = []
+    newly_allowed_critical: list[FlowChange] = []
+    removed_undocumented: list[FlowChange] = []
+    removed_undocumented_critical: list[FlowChange] = []
+    replacements: set[str] = set()
+
+    services = candidate_services(inputs.firewall_policy, inputs.required_communications)
+    for flow in candidate_flows(inputs.assets, services):
+        # A replacement/takeover is meaningful only for traffic the target
+        # rule itself is capable of matching. Evaluating with the target
+        # removed also detects fully shadowed rules: an earlier rule will be
+        # returned here even though the target was never first-match effective.
+        if _rule_matches(target_rule, flow):
+            without_target = evaluate_policy(
+                inputs.firewall_policy,
+                flow,
+                default_action,
+                excluded_rule_id=rule_id,
+            )
+            if without_target.action == target_rule.action:
+                replacements.add(without_target.matched_rule_id or "<default>")
+
+        before = evaluate_policy(inputs.firewall_policy, flow, default_action)
+        after = evaluate_policy(
+            inputs.firewall_policy,
+            flow,
+            default_action,
+            excluded_rule_id=rule_id,
+        )
+
+        if before.action == after.action:
+            continue
+
+        criticality = assets_by_id[flow.destination_asset_id].criticality
+        change = FlowChange(flow, before, after, criticality)
+        changed.append(change)
+
+        if before.action == "allow" and after.action == "deny":
+            # Required communications are reported by ID above. Everything
+            # else in the closed-world synthetic model is called undocumented,
+            # not automatically malicious.
+            if flow.key not in required_keys:
+                removed_undocumented.append(change)
+                if criticality == "critical":
+                    removed_undocumented_critical.append(change)
+
+        elif before.action == "deny" and after.action == "allow":
+            newly_allowed.append(change)
+            if criticality == "critical":
+                newly_allowed_critical.append(change)
+
+    return RuleRemovalAnalysis(
+        rule_id=rule_id,
+        rule_action=target_rule.action,
+        blocked_required_communication_ids=tuple(sorted(blocked_required)),
+        newly_allowed_flows=tuple(newly_allowed),
+        newly_allowed_critical_flows=tuple(newly_allowed_critical),
+        removed_undocumented_flows=tuple(removed_undocumented),
+        removed_undocumented_critical_flows=tuple(removed_undocumented_critical),
+        changed_flows=tuple(changed),
+        observed_replacement_rule_ids=tuple(sorted(replacements)),
+    )
+
+
+def analyze_all_rules(
+    inputs: DatasetInputs,
+    default_action: PolicyAction = "deny",
+) -> list[RuleRemovalAnalysis]:
+    """
+    Run the one-rule-at-a-time removal analysis for the whole policy.
+    """
+
+    validate_inputs(inputs)
+    return [
+        analyze_rule_removal(inputs, rule.rule_id, default_action)
+        for rule in inputs.firewall_policy
+    ]
+
+
 class PolicyAnalyzer:
     """
-    Evaluate traffic against one validated firewall-policy dataset.
+    A class that encapsulates the policy analysis engine, providing methods to evaluate traffic
+    flows against a firewall policy and analyze the effects of rule removals.
+
+    Attributes:
+        dataset (DatasetInputs): The dataset containing assets, firewall policy, rule usage, and required communications.
+        default_action (PolicyAction): The default action to take when no rules match a traffic flow.
+        assets_by_id (dict): A mapping of asset IDs to Asset objects for quick lookup.
     """
 
     def __init__(
@@ -706,3 +1075,9 @@ class PolicyAnalyzer:
             self.default_action,
             excluded_rule_id,
         )
+
+    def analyze_rule(self, rule_id: str) -> RuleRemovalAnalysis:
+        return analyze_rule_removal(self.dataset, rule_id, self.default_action)
+
+    def analyze_all(self) -> list[RuleRemovalAnalysis]:
+        return analyze_all_rules(self.dataset, self.default_action)
