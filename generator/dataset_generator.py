@@ -1,4 +1,5 @@
-"""Generate deterministic CSV datasets for the firewall review assistant to consume.
+"""
+Generate deterministic CSV datasets for the firewall review assistant to consume.
 
 Make sure to run this module from the repository root:
 
@@ -8,8 +9,8 @@ Make sure to run this module from the repository root:
 
 Each generated dataset has two directories:
 
-    inputs/ - CSV files that represent the firewall policy, assets, and required communications.
-    evaluation/ - CSV files that represent the rule usage history, evaluation scenarios, and expected recommendations
+    inputs/ - CSV files that represent the rule usage history, firewall policy, assets, and required communications.
+    evaluation/ - CSV files that represent the evaluation scenarios, and expected recommendations
 
 Asset roles and healthcare workflows are adapted from NIST SP 1800-8 and
 SP 1800-24. Firewall fields follow the simplified Palo Alto-style schemas in
