@@ -198,6 +198,11 @@ def _read_csv(path: Path, required_columns: set[str]) -> list[dict[str, str]]:
     with path.open("r", encoding="utf-8-sig", newline="") as handle:
         reader = csv.DictReader(handle)
         columns = set(reader.fieldnames or [])
+        duplicate_columns = _duplicate_values(list(reader.fieldnames or []))
+        if duplicate_columns:
+            raise InputValidationError(
+                f"{path.name} has duplicate columns: {', '.join(duplicate_columns)}"
+            )
         missing = required_columns - columns
         if missing:
             raise InputValidationError(
@@ -609,7 +614,14 @@ def validate_inputs(inputs: DatasetInputs) -> None:
             errors.append(f"{communication.communication_id} has an invalid service.")
 
     # Validate rule usage history
+    usage_dates: set[tuple[str, date]] = set()
     for usage in inputs.rule_usage:
+        usage_key = (usage.rule_id, usage.observed_on)
+        if usage_key in usage_dates:
+            errors.append(
+                f"Usage history for {usage.rule_id} has duplicate date {usage.observed_on}."
+            )
+        usage_dates.add(usage_key)
         if usage.rule_id not in known_rules:
             errors.append(f"Usage history references unknown rule {usage.rule_id}.")
         if usage.hit_count < 0:
@@ -849,6 +861,15 @@ def candidate_services(
             if service != "any":
                 services.add(service)
 
+    if any(service == "any" for rule in policy for service in rule.services):
+        for protocol in sorted(SUPPORTED_PROTOCOLS):
+            used_ports = {
+                service.destination_port for service in services if service.protocol == protocol
+            }
+            unused_port = next((port for port in range(1, 65536) if port not in used_ports), None)
+            if unused_port is not None:
+                services.add(Service(cast(Literal["tcp", "udp"], protocol), unused_port))
+
     return tuple(sorted(services, key=lambda item: (item.protocol, item.destination_port)))
 
 
@@ -1045,36 +1066,11 @@ class PolicyAnalyzer:
         dataset: DatasetInputs | str | Path,
         default_action: PolicyAction = "deny",
     ) -> None:
+
         self.dataset = load_dataset(dataset) if isinstance(dataset, (str, Path)) else dataset
         validate_inputs(self.dataset)
         self.default_action: PolicyAction = default_action
         self.assets_by_id = {asset.asset_id: asset for asset in self.dataset.assets}
-
-    def flow_for_communication(
-        self,
-        communication: RequiredCommunication,
-    ) -> TrafficFlow:
-        """
-        Convert a RequiredCommunication into a TrafficFlow for policy evaluation.
-        """
-
-        return communication_flow(communication, self.assets_by_id)
-
-    def evaluate(
-        self,
-        flow: TrafficFlow,
-        excluded_rule_id: str | None = None,
-    ) -> PolicyDecision:
-        """
-        Main entry point for evaluating a traffic flow against the firewall policy, optionally excluding a specific rule.
-        """
-
-        return evaluate_policy(
-            self.dataset.firewall_policy,
-            flow,
-            self.default_action,
-            excluded_rule_id,
-        )
 
     def analyze_rule(self, rule_id: str) -> RuleRemovalAnalysis:
         return analyze_rule_removal(self.dataset, rule_id, self.default_action)
