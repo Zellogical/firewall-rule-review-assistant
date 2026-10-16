@@ -48,7 +48,7 @@ SUPPORTED_PROTOCOLS = {"tcp", "udp"}
 
 class InputValidationError(ValueError):
     """
-    Custom error raised when an input CSV cannot be loaded safely.
+    Custom error raised when an input CSV cannot be loaded correctly.
     """
 
 
@@ -179,7 +179,7 @@ class RuleRemovalAnalysis:
 
 
 # ---------------------------------------------------------------------------
-# CSV loading
+# CSV loading helpers
 # ---------------------------------------------------------------------------
 
 
@@ -198,11 +198,13 @@ def _read_csv(path: Path, required_columns: set[str]) -> list[dict[str, str]]:
     with path.open("r", encoding="utf-8-sig", newline="") as handle:
         reader = csv.DictReader(handle)
         columns = set(reader.fieldnames or [])
+
         duplicate_columns = _duplicate_values(list(reader.fieldnames or []))
         if duplicate_columns:
             raise InputValidationError(
                 f"{path.name} has duplicate columns: {', '.join(duplicate_columns)}"
             )
+
         missing = required_columns - columns
         if missing:
             raise InputValidationError(
@@ -216,6 +218,7 @@ def _read_csv(path: Path, required_columns: set[str]) -> list[dict[str, str]]:
                     f"{path.name} row {row_number}: row contains more values than columns."
                 )
             rows.append({key: (value or "").strip() for key, value in row.items()})
+
         return rows
 
 
@@ -309,6 +312,7 @@ def _parse_address(value: str, context: str) -> Address:
 
     The value must be either a single IPv4 address, an IPv4 subnet in CIDR notation, or the string "any".
     """
+
     value = value.strip().lower()
     if value == "any":
         return "any"
@@ -341,19 +345,22 @@ def load_assets_csv(path: Path) -> list[Asset]:
 
     for row_number, row in enumerate(rows, start=2):
         context = f"{path.name} row {row_number}"
+
+        asset_id = _required_text(row, "asset_id", path.name, row_number)
         asset_type = _required_text(row, "asset_type", path.name, row_number)
+        address = _parse_address(row["ip_address"], context)
         zone = _required_text(row, "zone", path.name, row_number)
         criticality = _required_text(row, "criticality", path.name, row_number).lower()
+
         if criticality not in CRITICALITIES:
             raise InputValidationError(f"{context}: unsupported criticality '{criticality}'.")
 
-        address = _parse_address(row["ip_address"], context)
         if not isinstance(address, IPv4Address):
             raise InputValidationError(f"{context}: asset IP must be one IPv4 address.")
 
         assets.append(
             Asset(
-                _required_text(row, "asset_id", path.name, row_number),
+                asset_id,
                 asset_type,
                 address,
                 zone,
@@ -383,25 +390,31 @@ def load_firewall_policy_csv(path: Path) -> FirewallPolicy:
 
     for row_number, row in enumerate(rows, start=2):
         context = f"{path.name} row {row_number}"
+        rule_id = _required_text(row, "rule_id", path.name, row_number)
         action = _required_text(row, "action", path.name, row_number).lower()
+
         if action not in {"allow", "deny"}:
             raise InputValidationError(f"{context}: action must be allow or deny.")
 
         source_zones = _split_values(row["source_zones"], f"{context} source_zones")
+
         destination_zones = _split_values(
             row["destination_zones"], f"{context} destination_zones"
         )
+
         source_addresses = _split_values(
             row["source_addresses"], f"{context} source_addresses"
         )
+
         destination_addresses = _split_values(
             row["destination_addresses"], f"{context} destination_addresses"
         )
+
         services = _split_values(row["services"], f"{context} services")
 
         policy.append(
             FirewallRule(
-                _required_text(row, "rule_id", path.name, row_number),
+                rule_id,
                 source_zones,
                 destination_zones,
                 [_parse_address(value, context) for value in source_addresses],
@@ -501,11 +514,15 @@ def load_required_communications_csv(path: Path) -> list[RequiredCommunication]:
 def load_dataset(input_directory: str | Path) -> DatasetInputs:
     """
     Load the four analyzer inputs from a dataset directory.
+
+    Args:
+        input_directory: The path to the directory containing the four CSV files.
+
+    Returns:
+        A DatasetInputs object containing the loaded assets, firewall policy, rule usage, and required communications.
     """
 
     directory = Path(input_directory)
-    if (directory / "inputs").is_dir() and not (directory / "assets.csv").is_file():
-        directory = directory / "inputs"
 
     inputs = DatasetInputs(
         assets=load_assets_csv(directory / "assets.csv"),
@@ -513,9 +530,10 @@ def load_dataset(input_directory: str | Path) -> DatasetInputs:
         rule_usage=load_rule_usage_csv(directory / "rule_usage.csv"),
         required_communications=load_required_communications_csv(
             directory / "required_communications.csv"
-        ),
+        )
     )
     validate_inputs(inputs)
+
     return inputs
 
 
@@ -1058,7 +1076,6 @@ class PolicyAnalyzer:
     Attributes:
         dataset (DatasetInputs): The dataset containing assets, firewall policy, rule usage, and required communications.
         default_action (PolicyAction): The default action to take when no rules match a traffic flow.
-        assets_by_id (dict): A mapping of asset IDs to Asset objects for quick lookup.
     """
 
     def __init__(
@@ -1070,7 +1087,6 @@ class PolicyAnalyzer:
         self.dataset = load_dataset(dataset) if isinstance(dataset, (str, Path)) else dataset
         validate_inputs(self.dataset)
         self.default_action: PolicyAction = default_action
-        self.assets_by_id = {asset.asset_id: asset for asset in self.dataset.assets}
 
     def analyze_rule(self, rule_id: str) -> RuleRemovalAnalysis:
         return analyze_rule_removal(self.dataset, rule_id, self.default_action)

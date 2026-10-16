@@ -5,7 +5,8 @@ Recommend retain, removal_candidate, or investigate from policy evidence.
 from datetime import date, timedelta
 from pathlib import Path
 
-from engine.policy_analysis import DatasetInputs, PolicyAnalyzer
+from engine.policy_analysis import DatasetInputs, PolicyAnalyzer, RuleRemovalAnalysis
+from schemas.recommendation import RecommendationLabel, RuleRecommendation
 
 
 class RecommendationEngine:
@@ -48,3 +49,75 @@ class RecommendationEngine:
             if recent_start <= record.observed_on <= self.as_of_date
         )
         return complete_history, recent_hits
+
+    def recommend_rule(self, analysis: RuleRemovalAnalysis) -> RuleRecommendation:
+        """
+        Apply the decision matrix in order, using the first matching condition.
+        """
+
+        complete_history, recent_hits = self._summarize_usage(analysis.rule_id)
+        blocks_required = bool(analysis.blocked_required_communication_ids)
+        opens_critical_access = bool(analysis.newly_allowed_critical_flows)
+        removes_critical_access = bool(analysis.removed_undocumented_critical_flows)
+
+        evidence = [
+            f"Recent usage: {recent_hits} hits in the {self.recent_window_days} days through {self.as_of_date}.",
+            f"Complete daily history for the last {self.minimum_history_days} days: {complete_history}.",
+        ]
+
+        if blocks_required:
+            evidence.append(
+                "Removal blocks required communications: "
+                + ", ".join(analysis.blocked_required_communication_ids)
+                + "."
+            )
+
+        if analysis.newly_allowed_flows:
+            evidence.append(f"Removal newly allows {len(analysis.newly_allowed_flows)} modeled flows.")
+
+        if opens_critical_access:
+            destinations = sorted({
+                change.flow.destination_asset_id
+                for change in analysis.newly_allowed_critical_flows
+            })
+            evidence.append("Removal opens access to critical assets: " + ", ".join(destinations) + ".")
+
+        if analysis.removed_undocumented_flows:
+            evidence.append(
+                f"Removal closes {len(analysis.removed_undocumented_flows)} undocumented modeled flows."
+            )
+
+        if removes_critical_access:
+            destinations = sorted({
+                change.flow.destination_asset_id
+                for change in analysis.removed_undocumented_critical_flows
+            })
+            evidence.append("The rule permits undocumented access to critical assets: " + ", ".join(destinations) + ".")
+
+        if analysis.observed_replacement_rule_ids:
+            evidence.append(
+                "Observed replacement rules or default action: "
+                + ", ".join(analysis.observed_replacement_rule_ids)
+                + "."
+            )
+
+        recommendation: RecommendationLabel
+        if blocks_required and removes_critical_access:
+            recommendation = "investigate"
+            reason = "Required communication and undocumented critical access conflict. Do not remove as-is; review narrowing."
+        elif blocks_required:
+            recommendation = "retain"
+            reason = "Keep the rule to preserve the listed required communications, regardless of usage."
+        elif opens_critical_access:
+            recommendation = "retain"
+            reason = "Keep the rule because removal exposes a critical asset."
+        else:
+            recommendation = "investigate"
+            reason = "No decisive retain condition was found; further investigation is required."
+
+        evidence.append(reason)
+        if recommendation == "investigate":
+            priority = "high" if opens_critical_access or removes_critical_access else "normal"
+            evidence.append(f"Investigation priority: {priority}.")
+
+        return RuleRecommendation(analysis.rule_id, recommendation, evidence)
