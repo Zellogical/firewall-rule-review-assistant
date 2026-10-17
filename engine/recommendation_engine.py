@@ -111,9 +111,27 @@ class RecommendationEngine:
         elif opens_critical_access:
             recommendation = "retain"
             reason = "Keep the rule because removal exposes a critical asset."
+        elif not complete_history:
+            recommendation = "investigate"
+            reason = f"Daily usage coverage is missing within the {self.minimum_history_days} days through {self.as_of_date}."
+        elif not analysis.has_modeled_effect and not analysis.is_behaviorally_redundant:
+            recommendation = "investigate"
+            reason = "No changed flows or replacement evidence were found; modeled coverage is insufficient to justify removal."
+        elif analysis.is_behaviorally_redundant:
+            recommendation = "removal_candidate"
+            reason = "Another rule or the default supplies the same behavior for the modeled traffic."
+        elif analysis.removed_undocumented_flows and not analysis.newly_allowed_flows and recent_hits == 0:
+            recommendation = "removal_candidate"
+            reason = "No recent hits, no required communication interrupted, and no new access; removal closes undocumented access."
+        elif analysis.newly_allowed_flows:
+            recommendation = "investigate"
+            reason = "Removal creates new access, so inactivity alone cannot justify removing the rule."
+        elif recent_hits > 0:
+            recommendation = "investigate"
+            reason = "Recent usage exists, but no documented required communication depends on keeping this rule."
         else:
             recommendation = "investigate"
-            reason = "No decisive retain condition was found; further investigation is required."
+            reason = "The available evidence does not justify a retain or removal recommendation."
 
         evidence.append(reason)
         if recommendation == "investigate":
