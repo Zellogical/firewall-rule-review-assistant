@@ -1,8 +1,8 @@
 # For testing
-from engine.policy_analysis import PolicyAnalyzer
+from engine.recommendation_engine import RecommendationEngine
+
 
 if __name__ == "__main__":
-    policy_analyzer = PolicyAnalyzer("./datasets/redundant_002/inputs")
-
-    analysis = policy_analyzer.analyze_all()
+    engine = RecommendationEngine("datasets/mixed_001/inputs")
+    recommendations = engine.recommend_all()
     pass

@@ -101,6 +101,7 @@ class RecommendationEngine:
                 + "."
             )
 
+        # Decision matrix, in order of precedence. The first matching condition determines the recommendation.
         recommendation: RecommendationLabel
         if blocks_required and removes_critical_access:
             recommendation = "investigate"
@@ -139,3 +140,10 @@ class RecommendationEngine:
             evidence.append(f"Investigation priority: {priority}.")
 
         return RuleRecommendation(analysis.rule_id, recommendation, evidence)
+
+    def recommend_all(self) -> list[RuleRecommendation]:
+        """
+        Return one explained recommendation per rule, in policy order.
+        """
+
+        return [self.recommend_rule(analysis) for analysis in self.analyzer.analyze_all()]
