@@ -16,6 +16,7 @@ class RecommendationEngine:
         minimum_history_days: int = 90,
         recent_window_days: int = 30,
         as_of_date: date | None = None,
+        requirements_verified_complete: bool = True,
     ) -> None:
         if recent_window_days < 1 or minimum_history_days < recent_window_days:
             raise ValueError("History days must be at least the recent window, which must be positive.")
@@ -24,6 +25,7 @@ class RecommendationEngine:
         self.dataset = self.analyzer.dataset
         self.minimum_history_days = minimum_history_days
         self.recent_window_days = recent_window_days
+        self.requirements_verified_complete = requirements_verified_complete
         self.as_of_date = as_of_date if as_of_date is not None else max(
             (record.observed_on for record in self.dataset.rule_usage),
             default=date.today(),
@@ -63,6 +65,7 @@ class RecommendationEngine:
         evidence = [
             f"Recent usage: {recent_hits} hits in the {self.recent_window_days} days through {self.as_of_date}.",
             f"Complete daily history for the last {self.minimum_history_days} days: {complete_history}.",
+            f"Required communications verified for this review: {self.requirements_verified_complete}.",
         ]
 
         if blocks_required:
@@ -121,9 +124,14 @@ class RecommendationEngine:
         elif analysis.is_behaviorally_redundant:
             recommendation = "removal_candidate"
             reason = "Another rule or the default supplies the same behavior for the modeled traffic."
+            evidence.append("Redundancy covers modeled traffic only; review other traffic before removal.")
         elif analysis.removed_undocumented_flows and not analysis.newly_allowed_flows and recent_hits == 0:
-            recommendation = "removal_candidate"
-            reason = "No recent hits, no required communication interrupted, and no new access; removal closes undocumented access."
+            if self.requirements_verified_complete:
+                recommendation = "removal_candidate"
+                reason = "No recent hits, no required communication interrupted, and no new access; removal closes undocumented access."
+            else:
+                recommendation = "investigate"
+                reason = "No recent hits, but communication requirements are incomplete or unverified."
         elif analysis.newly_allowed_flows:
             recommendation = "investigate"
             reason = "Removal creates new access, so inactivity alone cannot justify removing the rule."

@@ -52,3 +52,13 @@ def test_recent_usage_without_a_requirement_needs_investigation():
     engine = RecommendationEngine(replace(dataset, rule_usage=usage), as_of_date=REVIEW_DATE)
     assert engine._summarize_usage("allow_pacs") == (True, 5)
     assert engine.recommend_all()[0].recommendation == "investigate"
+
+
+def test_an_undocumented_requirement_is_not_assumed_unnecessary():
+    dataset = make_dataset()
+    hidden = replace(dataset, required_communications=[])
+    assert RecommendationEngine(dataset).recommend_all()[0].recommendation == "retain"
+    assert RecommendationEngine(hidden).recommend_all()[0].recommendation == "removal_candidate"
+    engine = RecommendationEngine(hidden, requirements_verified_complete=False)
+    assert engine.recommend_all()[0].recommendation == "investigate"
+    assert len(dataset.required_communications) == 1
