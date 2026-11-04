@@ -17,7 +17,7 @@ At a high level the engine does the following:
 
 1. Load the CSV files and validate their required columns and relationships.
 2. Match traffic against zone, address, protocol, and destination-port fields.
-3. Evaluate rules from top to bottom; the first match wins.
+3. Evaluate rules from top to bottom. The first match wins.
 4. Re-evaluate the policy with one rule temporarily removed.
 5. Report what changed: required traffic blocked, traffic newly allowed,
    undocumented traffic removed, and which rule/default action takes over.
@@ -606,7 +606,7 @@ def validate_inputs(inputs: DatasetInputs) -> None:
     # Validate that each asset has a non-empty asset_type and zone, and that required communications reference known assets.
     for asset in inputs.assets:
         # Asset type and zone are dataset-defined labels.  They only need to
-        # exist; the policy engine does not require a predefined vocabulary.
+        # exist. The policy engine does not require a predefined vocabulary.
         if not isinstance(asset.asset_type, str) or not asset.asset_type.strip():
             errors.append(f"{asset.asset_id} must have a non-empty asset_type.")
         if not isinstance(asset.zone, str) or not asset.zone.strip():
@@ -976,7 +976,7 @@ def analyze_rule_removal(
 
     matches = [rule for rule in inputs.firewall_policy if rule.rule_id == rule_id]
     if len(matches) != 1:
-        raise ValueError(f"Expected exactly one rule named {rule_id}; found {len(matches)}.")
+        raise ValueError(f"Expected exactly one rule named {rule_id}. Found {len(matches)}.")
 
     target_rule = matches[0]
     assets_by_id = {asset.asset_id: asset for asset in inputs.assets}

@@ -108,7 +108,7 @@ class RecommendationEngine:
         recommendation: RecommendationLabel
         if blocks_required and removes_critical_access:
             recommendation = "investigate"
-            reason = "Required communication and undocumented critical access conflict. Do not remove as-is; review narrowing."
+            reason = "Required communication and undocumented critical access conflict. Do not remove as-is. Review narrowing."
         elif blocks_required:
             recommendation = "retain"
             reason = "Keep the rule to preserve the listed required communications, regardless of usage."
@@ -120,15 +120,15 @@ class RecommendationEngine:
             reason = f"Daily usage coverage is missing within the {self.minimum_history_days} days through {self.as_of_date}."
         elif not analysis.has_modeled_effect and not analysis.is_behaviorally_redundant:
             recommendation = "investigate"
-            reason = "No changed flows or replacement evidence were found; modeled coverage is insufficient to justify removal."
+            reason = "No changed flows or replacement evidence were found. Modeled coverage is insufficient to justify removal."
         elif analysis.is_behaviorally_redundant:
             recommendation = "removal_candidate"
             reason = "Another rule or the default supplies the same behavior for the modeled traffic."
-            evidence.append("Redundancy covers modeled traffic only; review other traffic before removal.")
+            evidence.append("Redundancy covers modeled traffic only. Review other traffic before removal.")
         elif analysis.removed_undocumented_flows and not analysis.newly_allowed_flows and recent_hits == 0:
             if self.requirements_verified_complete:
                 recommendation = "removal_candidate"
-                reason = "No recent hits, no required communication interrupted, and no new access; removal closes undocumented access."
+                reason = "No recent hits, no required communication interrupted, and no new access. Removal closes undocumented access."
             else:
                 recommendation = "investigate"
                 reason = "No recent hits, but communication requirements are incomplete or unverified."

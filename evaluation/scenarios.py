@@ -35,7 +35,7 @@ def load_scenarios(path: Path, truth: DatasetInputs) -> list[dict]:
             raise ValueError("A scenario references an unknown asset.")
         desired_action = {"use": "allow", "attack": "deny"}.get(row["scenario_type"])
         if desired_action is None or row["expected_action"] != desired_action:
-            raise ValueError("Use scenarios must expect allow; attack scenarios must expect deny.")
+            raise ValueError("Use scenarios must expect allow. Attack scenarios must expect deny.")
         port = int(row["service_destination_port"])
         if row["service_protocol"] not in {"tcp", "udp"} or not 1 <= port <= 65535:
             raise ValueError("A scenario has an unsupported protocol or port.")

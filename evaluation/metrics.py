@@ -7,7 +7,7 @@ def _rate(numerator: int, denominator: int) -> float | None:
 
 def calculate_metrics(rows: list[dict]) -> dict:
     """
-    Rates are proportions; None means there was no applicable denominator.
+    Rates are proportions. None means there was no applicable denominator.
 
     Safety counts apply only to removal candidates. Scenario counts represent
     removal-scenario pairs, since every rule is removed independently.
