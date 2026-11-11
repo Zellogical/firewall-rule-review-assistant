@@ -1,0 +1,21 @@
+field,value
+generator_version,1.0
+dataset_id,mixed_003
+profile,mixed
+profile_description,Combines all major rule-review conditions in one ordered policy.
+injected_conditions,required rules;redundant rule;obsolete rule;overly permissive rule;protective deny rule;inactive but required rule;incomplete usage history
+case_number,3
+seed,5820730118535741646
+end_date,2026-11-19
+history_days,120
+default_policy_action,deny
+list_separator,;
+service_format,protocol:destination_port
+research_basis,NIST SP 1800-8;NIST SP 1800-24;Palo Alto security-rule documentation
+documented_modeling_choices,IP addresses;asset quantities;criticality;ports;rule conditions;usage patterns;test combinations
+asset_count,22
+rule_count,11
+required_communication_count,12
+rule_usage_count,1221
+use_scenario_count,12
+attack_scenario_count,8

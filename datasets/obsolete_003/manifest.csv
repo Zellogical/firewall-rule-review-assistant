@@ -1,0 +1,21 @@
+field,value
+generator_version,1.0
+dataset_id,obsolete_003
+profile,obsolete
+profile_description,Adds a legacy rule with old activity and no current requirement.
+injected_conditions,required rules;obsolete rule
+case_number,3
+seed,15611155012396523837
+end_date,2026-11-19
+history_days,120
+default_policy_action,deny
+list_separator,;
+service_format,protocol:destination_port
+research_basis,NIST SP 1800-8;NIST SP 1800-24;Palo Alto security-rule documentation
+documented_modeling_choices,IP addresses;asset quantities;criticality;ports;rule conditions;usage patterns;test combinations
+asset_count,26
+rule_count,8
+required_communication_count,15
+rule_usage_count,960
+use_scenario_count,15
+attack_scenario_count,8

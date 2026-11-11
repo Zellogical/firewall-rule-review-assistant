@@ -1,0 +1,21 @@
+field,value
+generator_version,1.0
+dataset_id,overly_permissive_003
+profile,overly_permissive
+profile_description,Replaces a narrow EHR rule with broad clinical web access.
+injected_conditions,required rules;overly permissive rule;operational-security trade-off
+case_number,3
+seed,13068346197720981304
+end_date,2026-11-19
+history_days,120
+default_policy_action,deny
+list_separator,;
+service_format,protocol:destination_port
+research_basis,NIST SP 1800-8;NIST SP 1800-24;Palo Alto security-rule documentation
+documented_modeling_choices,IP addresses;asset quantities;criticality;ports;rule conditions;usage patterns;test combinations
+asset_count,27
+rule_count,7
+required_communication_count,17
+rule_usage_count,840
+use_scenario_count,17
+attack_scenario_count,8

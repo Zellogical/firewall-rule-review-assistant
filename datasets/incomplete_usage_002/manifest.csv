@@ -1,0 +1,21 @@
+field,value
+generator_version,1.0
+dataset_id,incomplete_usage_002
+profile,incomplete_usage
+profile_description,Adds an undocumented rule with only 21 days of usage data.
+injected_conditions,required rules;incomplete usage history
+case_number,2
+seed,874515271047884425
+end_date,2026-11-19
+history_days,120
+default_policy_action,deny
+list_separator,;
+service_format,protocol:destination_port
+research_basis,NIST SP 1800-8;NIST SP 1800-24;Palo Alto security-rule documentation
+documented_modeling_choices,IP addresses;asset quantities;criticality;ports;rule conditions;usage patterns;test combinations
+asset_count,22
+rule_count,8
+required_communication_count,10
+rule_usage_count,861
+use_scenario_count,10
+attack_scenario_count,8

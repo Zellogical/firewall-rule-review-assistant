@@ -1,0 +1,26 @@
+scenario_id,scenario_type,source_asset_id,destination_asset_id,service_protocol,service_destination_port,expected_action,description
+USE-REQ-STAFF_001-EHR,use,staff_001,ehr_001,tcp,443,allow,Staff workstation accesses the EHR web application.
+USE-REQ-STAFF_002-EHR,use,staff_002,ehr_001,tcp,443,allow,Staff workstation accesses the EHR web application.
+USE-REQ-STAFF_003-EHR,use,staff_003,ehr_001,tcp,443,allow,Staff workstation accesses the EHR web application.
+USE-REQ-STAFF_004-EHR,use,staff_004,ehr_001,tcp,443,allow,Staff workstation accesses the EHR web application.
+USE-REQ-STAFF_005-EHR,use,staff_005,ehr_001,tcp,443,allow,Staff workstation accesses the EHR web application.
+USE-REQ-VIEWER_001-PACS,use,viewer_001,pacs_001,tcp,443,allow,Viewer workstation retrieves medical images from PACS.
+USE-REQ-VIEWER_002-PACS,use,viewer_002,pacs_001,tcp,443,allow,Viewer workstation retrieves medical images from PACS.
+USE-REQ-VIEWER_003-PACS,use,viewer_003,pacs_001,tcp,443,allow,Viewer workstation retrieves medical images from PACS.
+USE-REQ-MODALITY_001-PACS,use,modality_001,pacs_001,tcp,104,allow,Imaging modality sends a study to PACS.
+USE-REQ-MODALITY_002-PACS,use,modality_002,pacs_001,tcp,104,allow,Imaging modality sends a study to PACS.
+USE-REQ-PUMP_001-PUMP-SERVER,use,pump_001,pump_server_001,tcp,8443,allow,Infusion pump exchanges configuration data with the pump server.
+USE-REQ-PUMP_002-PUMP-SERVER,use,pump_002,pump_server_001,tcp,8443,allow,Infusion pump exchanges configuration data with the pump server.
+USE-REQ-PUMP_003-PUMP-SERVER,use,pump_003,pump_server_001,tcp,8443,allow,Infusion pump exchanges configuration data with the pump server.
+USE-REQ-PUMP_004-PUMP-SERVER,use,pump_004,pump_server_001,tcp,8443,allow,Infusion pump exchanges configuration data with the pump server.
+USE-REQ-REMOTE-PUMP-SERVER,use,remote_proxy_001,pump_server_001,tcp,443,allow,Remote proxy supports infrequent pump-server maintenance.
+USE-REQ-PACS-VNA,use,pacs_001,vna_001,tcp,104,allow,PACS transfers medical images to the vendor-neutral archive.
+USE-REQ-RIS-PACS,use,ris_001,pacs_001,tcp,443,allow,The radiology information system exchanges study information with PACS.
+ATK-GUEST-EHR,attack,guest_001,ehr_001,tcp,443,deny,A guest device attempts to access the EHR.
+ATK-GUEST-PACS,attack,guest_001,pacs_001,tcp,443,deny,A guest device attempts to access PACS.
+ATK-GUEST-PUMP,attack,guest_001,pump_server_001,tcp,8443,deny,A guest device attempts to reach the pump server.
+ATK-STAFF-PACS,attack,staff_001,pacs_001,tcp,443,deny,A general staff workstation attempts direct PACS access.
+ATK-STAFF-LEGACY-WEB,attack,staff_001,legacy_reporting_001,tcp,443,deny,A staff workstation attempts undocumented web access to a legacy server.
+ATK-STAFF-LEGACY-ALT,attack,staff_001,legacy_reporting_001,tcp,8443,deny,A staff workstation attempts undocumented alternate-port access.
+ATK-STAFF-PUMP-SSH,attack,staff_001,pump_server_001,tcp,22,deny,A staff workstation attempts undocumented SSH access to the pump server.
+ATK-MODALITY-EHR,attack,modality_001,ehr_001,tcp,443,deny,An imaging modality attempts to access the EHR web application.

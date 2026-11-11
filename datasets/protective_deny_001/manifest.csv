@@ -1,0 +1,21 @@
+field,value
+generator_version,1.0
+dataset_id,protective_deny_001
+profile,protective_deny
+profile_description,Places a protective deny before broad clinical web access.
+injected_conditions,required rules;overly permissive rule;protective deny rule
+case_number,1
+seed,6719018565333263950
+end_date,2026-11-19
+history_days,120
+default_policy_action,deny
+list_separator,;
+service_format,protocol:destination_port
+research_basis,NIST SP 1800-8;NIST SP 1800-24;Palo Alto security-rule documentation
+documented_modeling_choices,IP addresses;asset quantities;criticality;ports;rule conditions;usage patterns;test combinations
+asset_count,25
+rule_count,8
+required_communication_count,14
+rule_usage_count,960
+use_scenario_count,14
+attack_scenario_count,8

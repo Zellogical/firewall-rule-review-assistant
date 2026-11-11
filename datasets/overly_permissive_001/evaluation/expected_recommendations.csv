@@ -1,0 +1,8 @@
+rule_id,expected_recommendation,justification
+allow_broad_clinical_web,investigate,The rule supports required EHR access but also permits undocumented clinical access.
+allow_viewers_pacs,retain,Removing the rule interrupts at least one documented required communication.
+allow_modalities_pacs,retain,Removing the rule interrupts at least one documented required communication.
+allow_pumps_pump_server,retain,Removing the rule interrupts at least one documented required communication.
+allow_remote_pump_server,retain,Removing the rule interrupts at least one documented required communication.
+allow_pacs_vna,retain,Removing the rule interrupts at least one documented required communication.
+allow_ris_pacs,retain,Removing the rule interrupts at least one documented required communication.

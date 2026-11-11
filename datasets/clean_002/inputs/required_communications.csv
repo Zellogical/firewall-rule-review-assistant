@@ -1,0 +1,15 @@
+communication_id,source_asset_id,destination_asset_id,service_protocol,service_destination_port,purpose,source_reference
+REQ-STAFF_001-EHR,staff_001,ehr_001,tcp,443,Staff workstation accesses the EHR web application.,Healthcare workflow; TCP/443 is a documented modeling choice.
+REQ-STAFF_002-EHR,staff_002,ehr_001,tcp,443,Staff workstation accesses the EHR web application.,Healthcare workflow; TCP/443 is a documented modeling choice.
+REQ-STAFF_003-EHR,staff_003,ehr_001,tcp,443,Staff workstation accesses the EHR web application.,Healthcare workflow; TCP/443 is a documented modeling choice.
+REQ-STAFF_004-EHR,staff_004,ehr_001,tcp,443,Staff workstation accesses the EHR web application.,Healthcare workflow; TCP/443 is a documented modeling choice.
+REQ-VIEWER_001-PACS,viewer_001,pacs_001,tcp,443,Viewer workstation retrieves medical images from PACS.,NIST SP 1800-24 architecture; TCP/443 is a modeling choice.
+REQ-VIEWER_002-PACS,viewer_002,pacs_001,tcp,443,Viewer workstation retrieves medical images from PACS.,NIST SP 1800-24 architecture; TCP/443 is a modeling choice.
+REQ-VIEWER_003-PACS,viewer_003,pacs_001,tcp,443,Viewer workstation retrieves medical images from PACS.,NIST SP 1800-24 architecture; TCP/443 is a modeling choice.
+REQ-MODALITY_001-PACS,modality_001,pacs_001,tcp,104,Imaging modality sends a study to PACS.,NIST SP 1800-24 architecture; the DICOM port is a modeling choice.
+REQ-MODALITY_002-PACS,modality_002,pacs_001,tcp,104,Imaging modality sends a study to PACS.,NIST SP 1800-24 architecture; the DICOM port is a modeling choice.
+REQ-PUMP_001-PUMP-SERVER,pump_001,pump_server_001,tcp,8443,Infusion pump exchanges configuration data with the pump server.,NIST SP 1800-8 architecture; TCP/8443 is a modeling choice.
+REQ-PUMP_002-PUMP-SERVER,pump_002,pump_server_001,tcp,8443,Infusion pump exchanges configuration data with the pump server.,NIST SP 1800-8 architecture; TCP/8443 is a modeling choice.
+REQ-REMOTE-PUMP-SERVER,remote_proxy_001,pump_server_001,tcp,443,Remote proxy supports infrequent pump-server maintenance.,NIST SP 1800-8 remote-access concept; port and frequency are modeling choices.
+REQ-PACS-VNA,pacs_001,vna_001,tcp,104,PACS transfers medical images to the vendor-neutral archive.,NIST SP 1800-24 imaging workflow; the DICOM port is a modeling choice.
+REQ-RIS-PACS,ris_001,pacs_001,tcp,443,The radiology information system exchanges study information with PACS.,NIST SP 1800-24 imaging workflow; TCP/443 is a modeling choice.

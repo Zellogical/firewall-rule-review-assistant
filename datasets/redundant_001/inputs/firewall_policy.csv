@@ -1,0 +1,9 @@
+rule_id,source_zones,destination_zones,source_addresses,destination_addresses,services,action
+allow_staff_ehr,business_office_zone,clinical_services_zone,10.200.20.10;10.200.20.11;10.200.20.12;10.200.20.13;10.200.20.14,10.200.50.10,tcp:443,allow
+allow_viewers_pacs,business_office_zone,clinical_services_zone,10.200.20.30,10.200.50.20,tcp:443,allow
+allow_modalities_pacs,medical_devices_zone,clinical_services_zone,10.200.70.30,10.200.50.20,tcp:104,allow
+allow_pumps_pump_server,medical_devices_zone,biomedical_engineering_zone,10.200.70.10;10.200.70.11,10.200.60.10,tcp:8443,allow
+allow_remote_pump_server,remote_access_zone,biomedical_engineering_zone,10.200.80.10,10.200.60.10,tcp:443,allow
+allow_pacs_vna,clinical_services_zone,clinical_services_zone,10.200.50.20,10.200.50.21,tcp:104,allow
+allow_ris_pacs,clinical_services_zone,clinical_services_zone,10.200.50.22,10.200.50.20,tcp:443,allow
+redundant_staff_ehr,business_office_zone,clinical_services_zone,10.200.20.10,10.200.50.10,tcp:443,allow
