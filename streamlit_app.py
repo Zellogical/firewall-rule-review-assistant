@@ -14,7 +14,7 @@ from engine.recommendation_engine import RecommendationEngine
 st.title("Firewall Rule Review Assistant")
 st.caption("Reviews one simplified policy. It does not change a live firewall.")
 files = {
-    name: st.file_uploader(name, type="csv")
+    name: st.file_uploader(name, type="csv", accept_multiple_files=False)
     for name in ("assets.csv", "firewall_policy.csv", "rule_usage.csv", "required_communications.csv")
 }
 complete = st.checkbox(
